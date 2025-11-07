@@ -1,4 +1,4 @@
-name: plan-planandapply-destroy-infra
+name: Terraform Infra Pipeline
 
 on:
   workflow_dispatch:
@@ -21,12 +21,97 @@ permissions:
   contents: read
   id-token: write
 
+env:
+  AWS_REGION: us-east-1
+  WORKING_DIRECTORY: resources
+
 jobs:
-  call-shared-pipeline:
-    uses: parth-vasoya-prominentpixel/shared-pipeline-for-tf-aws/.github/workflows/terraform-shared.yaml@main
-    with:
-      environment: ${{ github.event.inputs.environment }}
-      action: ${{ github.event.inputs.action }}
-    secrets:
-      SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
-      OIDC_ROLE: ${{ secrets.OIDC_ROLE }}
+  terraform:
+    name: Terraform ${{ github.event.inputs.action }} - ${{ github.event.inputs.environment }}
+    runs-on: ubuntu-22.04
+
+    steps:
+      # ---------------- Checkout ----------------
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          ssh-key: ${{ secrets.SSH_PRIVATE_KEY }}
+          persist-credentials: false
+
+      # ---------------- Optional SSH Setup ----------------
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          eval "$(ssh-agent -s)"
+          ssh-add ~/.ssh/id_rsa
+          ssh-keyscan github.com >> ~/.ssh/known_hosts
+
+      # ---------------- AWS Credentials ----------------
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.OIDC_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # ---------------- Terraform Init ----------------
+      - name: Terraform Init
+        run: terraform init -reconfigure -input=false -backend-config="../environments/democompany/us-east-1/${{ github.event.inputs.environment }}/backend.tfvars"
+        working-directory: ${{ env.WORKING_DIRECTORY }}
+
+      # ---------------- Terraform Checks ----------------
+      - name: Terraform Format
+        run: terraform fmt -recursive
+        working-directory: ${{ env.WORKING_DIRECTORY }}
+
+      - name: Terraform Format Check
+        run: terraform fmt -check -recursive
+        working-directory: ${{ env.WORKING_DIRECTORY }}
+
+      - name: Terraform Validate
+        run: terraform validate
+        working-directory: ${{ env.WORKING_DIRECTORY }}
+
+      - name: Relax server a bit
+        run: sleep 5
+
+      # ---------------- PLAN ----------------
+      - name: Terraform Plan
+        if: ${{ github.event.inputs.action == 'plan' || github.event.inputs.action == 'plan-apply' }}
+        run: terraform plan -var-file="../environments/democompany/us-east-1/${{ github.event.inputs.environment }}/inputs.tfvars" -out=tfplan
+        working-directory: ${{ env.WORKING_DIRECTORY }}
+
+      - name: Generate Terraform Graph (SVG)
+        if: ${{ github.event.inputs.action == 'plan' || github.event.inputs.action == 'plan-apply' }}
+        run: |
+          sudo apt-get update && sudo apt-get install -y graphviz
+          mkdir -p graph
+          terraform graph | dot -Tsvg > graph/terraform-${{ github.event.inputs.environment }}.svg
+        working-directory: ${{ env.WORKING_DIRECTORY }}
+
+      - name: Upload Terraform Graph Artifact
+        if: ${{ github.event.inputs.action == 'plan' || github.event.inputs.action == 'plan-apply' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-graph-${{ github.event.inputs.environment }}
+          path: ${{ env.WORKING_DIRECTORY }}/graph/terraform-${{ github.event.inputs.environment }}.svg
+
+      - name: Upload Plan Artifact
+        if: ${{ github.event.inputs.action == 'plan' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan-${{ github.event.inputs.environment }}
+          path: ${{ env.WORKING_DIRECTORY }}/tfplan
+
+      # ---------------- APPLY ----------------
+      - name: Terraform Apply
+        if: ${{ github.event.inputs.action == 'plan-apply' }}
+        run: terraform apply -auto-approve tfplan
+        working-directory: ${{ env.WORKING_DIRECTORY }}
+
+      # ---------------- DESTROY ----------------
+      - name: Terraform Destroy
+        if: ${{ github.event.inputs.action == 'destroy' }}
+        run: terraform destroy -auto-approve -var-file="../environments/democompany/us-east-1/${{ github.event.inputs.environment }}/inputs.tfvars"
+        working-directory: ${{ env.WORKING_DIRECTORY }}
