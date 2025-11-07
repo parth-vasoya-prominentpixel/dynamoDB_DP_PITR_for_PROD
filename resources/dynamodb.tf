@@ -16,7 +16,6 @@ module "dynamodb_table" {
   stream_enabled   = true
   stream_view_type = "NEW_IMAGE"
 
-  # ✅ Apply only for PROD
   deletion_protection_enabled = var.env == "prod" ? true : false
 
   point_in_time_recovery_enabled        = var.env == "prod" ? true : false
