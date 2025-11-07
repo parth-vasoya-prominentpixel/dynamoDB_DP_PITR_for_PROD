@@ -52,21 +52,31 @@ variable "enable_deletion_protection" {
   description = "Enable dynamodb deletion protection"
 }
  
-variable "point_in_time_recovery_enabled" {
-  type = bool
-  description = "Enable PITR in dynamodb"
+variable "enable_deletion_protection" {
+  type        = bool
+  description = "Enable DynamoDB deletion protection"
 }
- 
+
+variable "point_in_time_recovery_enabled" {
+  type        = bool
+  description = "Enable PITR in DynamoDB"
+}
+
 variable "point_in_time_recovery_period_in_days" {
   type        = number
   description = "Number of days (1–35) for PITR retention period. Required only if PITR is enabled."
   default     = null
- 
+
+
   validation {
-    condition = var.point_in_time_recovery_enabled == false || (
-      var.point_in_time_recovery_period_in_days != null &&
-      var.point_in_time_recovery_period_in_days >= 1 &&
-      var.point_in_time_recovery_period_in_days <= 35
+    condition = (
+      var.point_in_time_recovery_enabled == false
+      ||
+      (
+        var.point_in_time_recovery_period_in_days != null &&
+        var.point_in_time_recovery_period_in_days >= 1 &&
+        var.point_in_time_recovery_period_in_days <= 35
+      )
     )
     error_message = "You must provide a valid point_in_time_recovery_period_in_days (1–35) when point_in_time_recovery_enabled = true."
   }
