@@ -8,6 +8,3 @@ output "dynamodb_table_arn" {
 }
 
 
-output "bucket-web-hosting-link" {
-  value = module.s3_bucket.s3_bucket_website_domain
-}
