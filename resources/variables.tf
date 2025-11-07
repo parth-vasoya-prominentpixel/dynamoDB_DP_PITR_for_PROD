@@ -46,3 +46,28 @@ variable "billing_mode" {
   default     = "PAY_PER_REQUEST"
   description = "This is the value that we use as a billing mode in dynamoDB e.g.(PAY_PER_REQUEST, PROVISIONED)"
 }
+
+variable "enable_deletion_protection" {
+  type = bool
+  description = "Enable dynamodb deletion protection"
+}
+ 
+variable "point_in_time_recovery_enabled" {
+  type = bool
+  description = "Enable PITR in dynamodb"
+}
+ 
+variable "point_in_time_recovery_period_in_days" {
+  type        = number
+  description = "Number of days (1–35) for PITR retention period. Required only if PITR is enabled."
+  default     = null
+ 
+  validation {
+    condition = var.point_in_time_recovery_enabled == false || (
+      var.point_in_time_recovery_period_in_days != null &&
+      var.point_in_time_recovery_period_in_days >= 1 &&
+      var.point_in_time_recovery_period_in_days <= 35
+    )
+    error_message = "You must provide a valid point_in_time_recovery_period_in_days (1–35) when point_in_time_recovery_enabled = true."
+  }
+}
