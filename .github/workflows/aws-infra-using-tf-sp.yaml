@@ -1,0 +1,32 @@
+name: plan-planandapply-destroy-infra
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Choose environment: dev, uat, prod'
+        required: true
+        default: 'dev'
+        type: choice
+        options: [dev, uat, prod]
+
+      action:
+        description: 'Choose action: plan, plan-apply, destroy'
+        required: true
+        default: 'plan'
+        type: choice
+        options: [plan, plan-apply, destroy]
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  call-shared-pipeline:
+    uses: parth-vasoya-prominentpixel/shared-pipeline-for-tf-aws/.github/workflows/terraform-shared.yaml@main
+    with:
+      environment: ${{ github.event.inputs.environment }}
+      action: ${{ github.event.inputs.action }}
+    secrets:
+      SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+      OIDC_ROLE: ${{ secrets.OIDC_ROLE }}

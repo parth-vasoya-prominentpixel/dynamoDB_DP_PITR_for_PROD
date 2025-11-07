@@ -1,0 +1,5 @@
+region         = "us-east-1"
+env            = "dev"
+account_number = "501046919017"
+prefix_company = "pv"
+company        = "pv"
