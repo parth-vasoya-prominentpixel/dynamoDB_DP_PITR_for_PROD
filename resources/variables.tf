@@ -38,7 +38,7 @@ variable "hash_key" {
 }
 
 variable "dyndb_name" {
-  default     = "tf-lock-store-logs"
+  default     = "pitr-deletion-protection"
   description = "This is the name we use in dynamo db table"
 }
 
