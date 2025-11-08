@@ -108,12 +108,12 @@ jobs:
                   print(f"🛡️ Enabling Deletion Protection on {name}...")
                   dynamodb.update_table(
                       TableName=name,
-                      DeletionProtectionEnabled=True
+                      DeletionProtectionEnabled=False
                   )
                   print(f"✅ Deletion Protection enabled on {name}.")
               except Exception as e:
-                  if "ValidationException" in str(e) and "already enabled" in str(e).lower():
-                      print(f"ℹ️ Deletion protection already enabled.")
+                  if "ValidationException" in str(e) and "already disabled" in str(e).lower():
+                      print(f"ℹ️ Deletion protection already disabled.")
                   else:
                       print(f"⚠️ Deletion protection error: {e}")
 
