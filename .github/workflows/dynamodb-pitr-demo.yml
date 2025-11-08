@@ -1,0 +1,158 @@
+name: DynamoDB PITR Demo Pipeline
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Choose environment: dev, uat, prod"
+        required: true
+        default: "dev"
+        type: choice
+        options: [dev, uat, prod]
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  AWS_REGION: us-east-1
+  REGION_PREFIX: use1
+  RESOURCE_PREFIX: d1g0
+  TENANT_NAME: demo
+  TABLE_NAME: demo-pitr-table
+  PITR_RETENTION_DAYS: 7
+
+jobs:
+  setup:
+    name: Setup & AWS Authentication
+    runs-on: ubuntu-22.04
+    outputs:
+      environment: ${{ github.event.inputs.environment }}
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Configure AWS Credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.OIDC_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Verify AWS Access
+        run: aws sts get-caller-identity
+
+
+  demo:
+    name: DynamoDB PITR Demo (${{ needs.setup.outputs.environment }})
+    needs: setup
+    runs-on: ubuntu-22.04
+    environment:
+      name: ${{ needs.setup.outputs.environment }}
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.OIDC_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install boto3
+        run: pip install boto3
+
+      - name: Run Inline Python DynamoDB Creation Demo (No KMS)
+        env:
+          ENVIRONMENT: ${{ github.event.inputs.environment }}
+          REGION_PREFIX: ${{ env.REGION_PREFIX }}
+          TENANT_NAME: ${{ env.TENANT_NAME }}
+          RESOURCE_PREFIX: ${{ env.RESOURCE_PREFIX }}
+          TABLE_NAME: ${{ env.TABLE_NAME }}
+          PITR_RETENTION_DAYS: ${{ env.PITR_RETENTION_DAYS }}
+          AWS_REGION: ${{ env.AWS_REGION }}
+        run: |
+          import boto3, os, time, copy, json
+
+          ENVIRONMENT = os.getenv("ENVIRONMENT")
+          REGION = os.getenv("AWS_REGION")
+          TABLE_NAME = os.getenv("TABLE_NAME")
+          PITR_DAYS = int(os.getenv("PITR_RETENTION_DAYS", "7"))
+
+          dynamodb = boto3.client("dynamodb", region_name=REGION)
+
+          def table_exists(name):
+              try:
+                  dynamodb.describe_table(TableName=name)
+                  return True
+              except dynamodb.exceptions.ResourceNotFoundException:
+                  return False
+
+          def wait_for_table(name, status):
+              for _ in range(60):
+                  desc = dynamodb.describe_table(TableName=name)
+                  s = desc["Table"]["TableStatus"]
+                  if s == status:
+                      print(f"✅ Table {name} is now {status}.")
+                      return
+                  time.sleep(5)
+              raise TimeoutError(f"Table {name} did not reach {status}")
+
+          def create_table_with_pitr():
+              table_def = {
+                  "TableName": TABLE_NAME,
+                  "BillingMode": "PAY_PER_REQUEST",
+                  "AttributeDefinitions": [{"AttributeName": "id", "AttributeType": "S"}],
+                  "KeySchema": [{"AttributeName": "id", "KeyType": "HASH"}],
+                  "TimeToLiveSpecification": {"Enabled": True, "AttributeName": "ttl_expire_at"}
+              }
+
+              if not table_exists(TABLE_NAME):
+                  print(f"🚀 Creating new table {TABLE_NAME}...")
+                  modified = copy.deepcopy(table_def)
+                  ttl_spec = modified.pop("TimeToLiveSpecification", None)
+
+                  if ENVIRONMENT == "prod":
+                      modified["DeletionProtectionEnabled"] = True
+                      print(f"Deletion Protection enabled (prod)")
+
+                  dynamodb.create_table(**modified)
+                  wait_for_table(TABLE_NAME, "ACTIVE")
+
+                  if ENVIRONMENT == "prod":
+                      try:
+                          print(f"Enabling PITR ({PITR_DAYS} days retention)...")
+                          dynamodb.update_continuous_backups(
+                              TableName=TABLE_NAME,
+                              PointInTimeRecoverySpecification={
+                                  "PointInTimeRecoveryEnabled": True,
+                                  "RecoveryWindowInDays": PITR_DAYS,
+                              },
+                          )
+                          print(f"✅ PITR Enabled on {TABLE_NAME} ({PITR_DAYS} days)")
+                      except Exception as e:
+                          print(f"❌ PITR Error: {e}")
+
+                  if ttl_spec:
+                      print(f"Enabling TTL attribute: {ttl_spec['AttributeName']}")
+                      dynamodb.update_time_to_live(
+                          TableName=TABLE_NAME, TimeToLiveSpecification=ttl_spec
+                      )
+                      print("✅ TTL Enabled")
+
+              else:
+                  print(f"ℹ️ Table {TABLE_NAME} already exists.")
+                  if ENVIRONMENT == "prod":
+                      desc = dynamodb.describe_continuous_backups(TableName=TABLE_NAME)
+                      pitr = desc["ContinuousBackupsDescription"]["PointInTimeRecoveryDescription"]
+                      print(f"PITR: {json.dumps(pitr, indent=2)}")
+
+          create_table_with_pitr()
+          print("🎉 Demo complete — check DynamoDB console to verify settings!")
