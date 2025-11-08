@@ -10,22 +10,6 @@ module "dynamodb_table" {
     {
       name = var.hash_key
       type = "S"
-    },
-    {
-      name = "Name"
-      type = "S"
-    },
-    {
-      name = "Age"
-      type = "S"
-    },
-    {
-      name = "College"
-      type = "S"
-    },
-    {
-      name = "email"
-      type = "S"
     }
   ]
 
