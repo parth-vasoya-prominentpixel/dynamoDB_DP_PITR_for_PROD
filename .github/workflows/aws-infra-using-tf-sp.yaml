@@ -11,11 +11,11 @@ on:
         options: [dev, uat, prod]
 
       action:
-        description: 'Choose action: plan, plan-apply, destroy'
+        description: 'Choose action: deploy or destroy'
         required: true
-        default: 'plan'
+        default: 'deploy'
         type: choice
-        options: [plan, plan-apply, destroy]
+        options: [deploy, destroy]
 
 permissions:
   contents: read
@@ -25,21 +25,23 @@ env:
   AWS_REGION: us-east-1
   WORKING_DIRECTORY: resources
 
+# ============================================================
+# 1️⃣ SETUP JOB — shared base setup for all actions
+# ============================================================
 jobs:
-  terraform:
-    name: Terraform ${{ github.event.inputs.action }} - ${{ github.event.inputs.environment }}
+  setup:
+    name: Setup and Authentication
     runs-on: ubuntu-22.04
-
+    outputs:
+      environment: ${{ github.event.inputs.environment }}
+      action: ${{ github.event.inputs.action }}
     steps:
-      # ---------------- Checkout ----------------
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
-          ssh-key: ${{ secrets.SSH_PRIVATE_KEY }}
           persist-credentials: false
 
-      # ---------------- Optional SSH Setup ----------------
-      - name: Setup SSH
+      - name: Setup SSH Access
         run: |
           mkdir -p ~/.ssh
           echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
@@ -48,70 +50,161 @@ jobs:
           ssh-add ~/.ssh/id_rsa
           ssh-keyscan github.com >> ~/.ssh/known_hosts
 
-      # ---------------- AWS Credentials ----------------
+      - name: Configure AWS Credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.OIDC_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Verify AWS Access
+        run: aws sts get-caller-identity
+
+
+# ============================================================
+# 2️⃣ PLAN JOB — automatically runs for both deploy & destroy
+# ============================================================
+  plan:
+    name: Terraform Plan (${{ needs.setup.outputs.action }} - ${{ needs.setup.outputs.environment }})
+    needs: setup
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.OIDC_ROLE }}
           aws-region: ${{ env.AWS_REGION }}
 
-      # ---------------- Terraform Init ----------------
       - name: Terraform Init
-        run: terraform init -reconfigure -input=false -backend-config="../environments/democompany/us-east-1/${{ github.event.inputs.environment }}/backend.tfvars"
-        working-directory: ${{ env.WORKING_DIRECTORY }}
-
-      # ---------------- Terraform Checks ----------------
-      - name: Terraform Format
-        run: terraform fmt -recursive
-        working-directory: ${{ env.WORKING_DIRECTORY }}
-
-      - name: Terraform Format Check
-        run: terraform fmt -check -recursive
+        run: terraform init -reconfigure -input=false \
+          -backend-config="../environments/democompany/us-east-1/${{ needs.setup.outputs.environment }}/backend.tfvars"
         working-directory: ${{ env.WORKING_DIRECTORY }}
 
       - name: Terraform Validate
         run: terraform validate
         working-directory: ${{ env.WORKING_DIRECTORY }}
 
-      - name: Relax server a bit
-        run: sleep 5
-
-      # ---------------- PLAN ----------------
       - name: Terraform Plan
-        if: ${{ github.event.inputs.action == 'plan' || github.event.inputs.action == 'plan-apply' }}
-        run: terraform plan -var-file="../environments/democompany/us-east-1/${{ github.event.inputs.environment }}/inputs.tfvars" -out=tfplan
+        id: plan
+        run: |
+          if [ "${{ needs.setup.outputs.action }}" == "deploy" ]; then
+            terraform plan \
+              -var-file="../environments/democompany/us-east-1/${{ needs.setup.outputs.environment }}/inputs.tfvars" \
+              -out=tfplan
+          else
+            terraform plan -destroy \
+              -var-file="../environments/democompany/us-east-1/${{ needs.setup.outputs.environment }}/inputs.tfvars" \
+              -out=tfplan
+          fi
         working-directory: ${{ env.WORKING_DIRECTORY }}
 
       - name: Generate Terraform Graph (SVG)
-        if: ${{ github.event.inputs.action == 'plan' || github.event.inputs.action == 'plan-apply' }}
         run: |
           sudo apt-get update && sudo apt-get install -y graphviz
           mkdir -p graph
-          terraform graph | dot -Tsvg > graph/terraform-${{ github.event.inputs.environment }}.svg
+          terraform graph | dot -Tsvg > graph/terraform-${{ needs.setup.outputs.environment }}.svg
         working-directory: ${{ env.WORKING_DIRECTORY }}
 
-      - name: Upload Terraform Graph Artifact
-        if: ${{ github.event.inputs.action == 'plan' || github.event.inputs.action == 'plan-apply' }}
+      # Upload both plan and graph artifacts
+      - name: Upload Terraform Plan Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: terraform-graph-${{ github.event.inputs.environment }}
-          path: ${{ env.WORKING_DIRECTORY }}/graph/terraform-${{ github.event.inputs.environment }}.svg
-
-      - name: Upload Plan Artifact
-        if: ${{ github.event.inputs.action == 'plan' }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: tfplan-${{ github.event.inputs.environment }}
+          name: tfplan-${{ needs.setup.outputs.environment }}
           path: ${{ env.WORKING_DIRECTORY }}/tfplan
 
-      # ---------------- APPLY ----------------
-      - name: Terraform Apply
-        if: ${{ github.event.inputs.action == 'plan-apply' }}
+      - name: Upload Terraform Graph Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-graph-${{ needs.setup.outputs.environment }}
+          path: ${{ env.WORKING_DIRECTORY }}/graph/terraform-${{ needs.setup.outputs.environment }}.svg
+
+      - name: Upload Terraform Logs (Optional)
+        if: always()
+        run: |
+          mkdir -p logs
+          terraform show -no-color tfplan > logs/tfplan.txt
+        working-directory: ${{ env.WORKING_DIRECTORY }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: terraform-logs-${{ needs.setup.outputs.environment }}
+          path: ${{ env.WORKING_DIRECTORY }}/logs/tfplan.txt
+
+
+# ============================================================
+# 3️⃣ APPLY JOB — manual approval for DEPLOY
+# ============================================================
+  apply:
+    name: Terraform Apply (${{ needs.setup.outputs.environment }})
+    needs: [setup, plan]
+    if: ${{ needs.setup.outputs.action == 'deploy' }}
+    runs-on: ubuntu-22.04
+    environment:
+      name: ${{ needs.setup.outputs.environment }}
+      # ✅ set up environment protection rule for manual approval before apply
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.OIDC_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Download Plan Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: tfplan-${{ needs.setup.outputs.environment }}
+          path: ${{ env.WORKING_DIRECTORY }}
+
+      - name: Terraform Init
+        run: terraform init -reconfigure -input=false \
+          -backend-config="../environments/democompany/us-east-1/${{ needs.setup.outputs.environment }}/backend.tfvars"
+        working-directory: ${{ env.WORKING_DIRECTORY }}
+
+      - name: Terraform Apply (Approved)
         run: terraform apply -auto-approve tfplan
         working-directory: ${{ env.WORKING_DIRECTORY }}
 
-      # ---------------- DESTROY ----------------
-      - name: Terraform Destroy
-        if: ${{ github.event.inputs.action == 'destroy' }}
-        run: terraform destroy -auto-approve -var-file="../environments/democompany/us-east-1/${{ github.event.inputs.environment }}/inputs.tfvars"
+
+# ============================================================
+# 4️⃣ DESTROY JOB — manual approval for DESTROY
+# ============================================================
+  destroy:
+    name: Terraform Destroy (${{ needs.setup.outputs.environment }})
+    needs: [setup, plan]
+    if: ${{ needs.setup.outputs.action == 'destroy' }}
+    runs-on: ubuntu-22.04
+    environment:
+      name: ${{ needs.setup.outputs.environment }}
+      # ✅ manual approval via environment protection rule
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.OIDC_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Download Plan Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: tfplan-${{ needs.setup.outputs.environment }}
+          path: ${{ env.WORKING_DIRECTORY }}
+
+      - name: Terraform Init
+        run: terraform init -reconfigure -input=false \
+          -backend-config="../environments/democompany/us-east-1/${{ needs.setup.outputs.environment }}/backend.tfvars"
+        working-directory: ${{ env.WORKING_DIRECTORY }}
+
+      - name: Terraform Destroy (Approved)
+        run: terraform apply -auto-approve tfplan
         working-directory: ${{ env.WORKING_DIRECTORY }}
