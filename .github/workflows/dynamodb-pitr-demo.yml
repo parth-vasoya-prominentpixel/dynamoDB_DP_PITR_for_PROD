@@ -16,7 +16,7 @@ permissions:
 
 env:
   AWS_REGION: us-east-1
-  TABLE_NAME: poc-dynamodb-pitr-demo
+  BASE_TABLE_NAME: poc-dynamodb-pitr-demo
 
 jobs:
   dynamodb-poc:
@@ -42,10 +42,10 @@ jobs:
       - name: Install boto3
         run: pip install boto3
 
-      - name: Run DynamoDB Create/Update POC
+      - name: Run DynamoDB Create/Update POC with Retry
         env:
           ENVIRONMENT: ${{ github.event.inputs.environment }}
-          TABLE_NAME: ${{ env.TABLE_NAME }}
+          BASE_TABLE_NAME: ${{ env.BASE_TABLE_NAME }}
           AWS_REGION: ${{ env.AWS_REGION }}
         run: |
           python3 - <<'EOF'
@@ -53,7 +53,8 @@ jobs:
 
           ENV = os.getenv("ENVIRONMENT")
           REGION = os.getenv("AWS_REGION")
-          TABLE_NAME = os.getenv("TABLE_NAME")
+          BASE_TABLE_NAME = os.getenv("BASE_TABLE_NAME")
+          TABLE_NAME = f"{BASE_TABLE_NAME}-{ENV}"
 
           dynamodb = boto3.client("dynamodb", region_name=REGION)
 
@@ -70,8 +71,29 @@ jobs:
                   if desc["Table"]["TableStatus"] == desired:
                       print(f"✅ Table {name} reached {desired}")
                       return
-                  print(f"⏳ Waiting for {desired}...")
+                  print(f"⏳ Waiting for {desired} (current: {desc['Table']['TableStatus']})...")
                   time.sleep(5)
+
+          def enable_pitr_with_retry(name, retention_days=7, max_attempts=5):
+              for attempt in range(1, max_attempts + 1):
+                  try:
+                      dynamodb.update_continuous_backups(
+                          TableName=name,
+                          PointInTimeRecoverySpecification={
+                              "PointInTimeRecoveryEnabled": True,
+                              "RecoveryPeriodInDays": retention_days
+                          }
+                      )
+                      print(f"✅ PITR enabled on {name} ({retention_days}-day retention)")
+                      return True
+                  except dynamodb.exceptions.ContinuousBackupsUnavailableException:
+                      print(f"⏳ PITR not ready yet (attempt {attempt}/{max_attempts})... waiting {attempt*10}s")
+                      time.sleep(attempt * 10)
+                  except Exception as e:
+                      print(f"⚠️ PITR enable error: {e}")
+                      return False
+              print(f"❌ PITR setup failed after {max_attempts} attempts.")
+              return False
 
           def create_or_update_table():
               table_def = {
@@ -95,18 +117,8 @@ jobs:
                   wait_for_status(TABLE_NAME, "ACTIVE")
 
                   if ENV == "prod":
-                      try:
-                          print("📦 Enabling PITR (Point-in-Time Recovery, 7 days)...")
-                          dynamodb.update_continuous_backups(
-                              TableName=TABLE_NAME,
-                              PointInTimeRecoverySpecification={
-                                  "PointInTimeRecoveryEnabled": True,
-                                  "RecoveryPeriodInDays": 7  # ✅ Correct boto3 param
-                              }
-                          )
-                          print("✅ PITR enabled with 7-day retention.")
-                      except Exception as e:
-                          print(f"⚠️ PITR error: {e}")
+                      print("📦 Enabling PITR (Point-in-Time Recovery)...")
+                      enable_pitr_with_retry(TABLE_NAME, retention_days=7)
                   else:
                       print("Skipping PITR (non-prod).")
 
@@ -129,14 +141,7 @@ jobs:
                           if (pitr_desc.get("PointInTimeRecoveryStatus") != "ENABLED" or
                               pitr_desc.get("RecoveryPeriodInDays") != 7):
                               print("Updating PITR retention to 7 days...")
-                              dynamodb.update_continuous_backups(
-                                  TableName=TABLE_NAME,
-                                  PointInTimeRecoverySpecification={
-                                      "PointInTimeRecoveryEnabled": True,
-                                      "RecoveryPeriodInDays": 7
-                                  }
-                              )
-                              print("✅ PITR updated to 7 days.")
+                              enable_pitr_with_retry(TABLE_NAME, retention_days=7)
                           else:
                               print("✅ PITR already correctly configured.")
                       except Exception as e:
@@ -154,6 +159,7 @@ jobs:
                                   "AttributeName": "ttl_expire_at"
                               }
                           )
+                          print("✅ TTL re-enabled.")
                       else:
                           print("✅ TTL already enabled.")
                   except Exception as e:
@@ -161,5 +167,5 @@ jobs:
 
           # === EXECUTE ===
           create_or_update_table()
-          print("🎉 POC complete — check DynamoDB console.")
+          print(f"🎉 POC complete — check DynamoDB console for table: {TABLE_NAME}")
           EOF
