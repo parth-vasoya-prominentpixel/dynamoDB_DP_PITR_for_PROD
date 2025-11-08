@@ -1,4 +1,4 @@
-name: DynamoDB PITR POC
+name: DynamoDB PITR + Deletion Protection POC
 
 on:
   workflow_dispatch:
@@ -42,23 +42,21 @@ jobs:
       - name: Install boto3
         run: pip install boto3
 
-      - name: Run DynamoDB Create/Update POC with Retry
+      - name: Run DynamoDB PITR + Deletion Protection Demo
         env:
           ENVIRONMENT: ${{ github.event.inputs.environment }}
           BASE_TABLE_NAME: ${{ env.BASE_TABLE_NAME }}
           AWS_REGION: ${{ env.AWS_REGION }}
         run: |
           python3 - <<'EOF'
-          import boto3, os, time
+          import boto3, os, time, json
 
           ENV = os.getenv("ENVIRONMENT")
           REGION = os.getenv("AWS_REGION")
           BASE_TABLE_NAME = os.getenv("BASE_TABLE_NAME")
           TABLE_NAME = f"{BASE_TABLE_NAME}-{ENV}"
-
           dynamodb = boto3.client("dynamodb", region_name=REGION)
 
-          # ---------- Helpers ----------
           def table_exists(name):
               try:
                   dynamodb.describe_table(TableName=name)
@@ -77,7 +75,7 @@ jobs:
                       print(f"⏳ Waiting for {desired} (current: {status})...")
                       time.sleep(interval)
                   except Exception as e:
-                      print(f"⚠️ Error while waiting for status: {e}")
+                      print(f"⚠️ Error while waiting: {e}")
                       time.sleep(interval)
               print(f"❌ Timeout waiting for table {name} to reach {desired}.")
 
@@ -96,7 +94,7 @@ jobs:
                       return True
                   except dynamodb.exceptions.ContinuousBackupsUnavailableException:
                       if attempt < max_attempts:
-                          print(f"⏳ PITR not ready (attempt {attempt}). Retrying in 10s...")
+                          print(f"⏳ PITR not ready yet (attempt {attempt}). Retrying in 10s...")
                           time.sleep(10)
                       else:
                           print(f"❌ PITR unavailable after {max_attempts} attempts.")
@@ -105,7 +103,20 @@ jobs:
                       return False
               return False
 
-          # ---------- Main Logic ----------
+          def ensure_deletion_protection(name):
+              try:
+                  print(f"🛡️ Enabling Deletion Protection on {name}...")
+                  dynamodb.update_table(
+                      TableName=name,
+                      DeletionProtectionEnabled=True
+                  )
+                  print(f"✅ Deletion Protection enabled on {name}.")
+              except Exception as e:
+                  if "ValidationException" in str(e) and "already enabled" in str(e).lower():
+                      print(f"ℹ️ Deletion protection already enabled.")
+                  else:
+                      print(f"⚠️ Deletion protection error: {e}")
+
           def create_or_update_table():
               table_def = {
                   "TableName": TABLE_NAME,
@@ -118,19 +129,18 @@ jobs:
                   print(f"🚀 Creating table: {TABLE_NAME}")
                   if ENV in ("prod", "prd"):
                       table_def["DeletionProtectionEnabled"] = True
-                      print("🔒 Deletion protection enabled for production.")
+                      print("🔒 Deletion protection enabled for prod during creation.")
 
                   dynamodb.create_table(**table_def)
                   wait_for_status(TABLE_NAME, "ACTIVE")
 
-                  # Enable PITR only for production
+                  # Enable PITR + TTL for prod
                   if ENV in ("prod", "prd"):
-                      print("📦 Enabling Point-in-Time Recovery (PITR)...")
+                      print("📦 Enabling PITR (Point-in-Time Recovery)...")
                       enable_pitr_with_retry(TABLE_NAME)
                   else:
-                      print("ℹ️ Non-prod environment — skipping PITR and deletion protection.")
+                      print("ℹ️ Non-prod environment — skipping PITR.")
 
-                  # TTL enablement (non-breaking)
                   try:
                       print("⏰ Enabling TTL on 'ttl_expire_at'...")
                       dynamodb.update_time_to_live(
@@ -142,27 +152,29 @@ jobs:
                       print(f"⚠️ TTL enable error: {e}")
 
               else:
-                  print(f"ℹ️ Table {TABLE_NAME} already exists — checking current configuration...")
+                  print(f"ℹ️ Table {TABLE_NAME} already exists — validating configuration...")
 
-                  # --- Check PITR ---
                   if ENV in ("prod", "prd"):
+                      ensure_deletion_protection(TABLE_NAME)
                       try:
                           desc = dynamodb.describe_continuous_backups(TableName=TABLE_NAME)
-                          pitr_desc = desc["ContinuousBackupsDescription"]["PointInTimeRecoveryDescription"]
-                          status = pitr_desc.get("PointInTimeRecoveryStatus")
-                          retention = pitr_desc.get("RecoveryPeriodInDays", None)
+                          pitr = desc["ContinuousBackupsDescription"]["PointInTimeRecoveryDescription"]
+                          status = pitr.get("PointInTimeRecoveryStatus")
+                          retention = pitr.get("RecoveryPeriodInDays", None)
 
-                          if status == "ENABLED":
-                              print(f"✅ PITR already enabled ({retention or 'default'} days). Skipping.")
+                          if status == "ENABLED" and retention == 7:
+                              print(f"✅ PITR already enabled (7-day retention).")
+                          elif status == "ENABLED" and retention != 7:
+                              print(f"⚙️ Updating PITR retention from {retention} to 7 days...")
+                              enable_pitr_with_retry(TABLE_NAME)
                           else:
-                              print(f"⚙️ Enabling PITR (currently disabled)...")
+                              print(f"⚙️ PITR currently disabled — enabling now...")
                               enable_pitr_with_retry(TABLE_NAME)
                       except Exception as e:
                           print(f"⚠️ PITR check error: {e}")
                   else:
-                      print("ℹ️ Non-prod environment — skipping PITR check.")
+                      print("ℹ️ Non-prod environment — skipping PITR & deletion protection.")
 
-                  # --- Check TTL ---
                   try:
                       ttl = dynamodb.describe_time_to_live(TableName=TABLE_NAME)
                       ttl_status = ttl.get("TimeToLiveDescription", {}).get("TimeToLiveStatus")
@@ -178,7 +190,7 @@ jobs:
                   except Exception as e:
                       print(f"⚠️ TTL check error: {e}")
 
-          # ---------- Execute ----------
+          # ---------- EXECUTE ----------
           create_or_update_table()
           print(f"🎉 POC complete — check DynamoDB console for table: {TABLE_NAME}")
           EOF
