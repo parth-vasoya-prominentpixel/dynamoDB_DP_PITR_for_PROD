@@ -79,8 +79,7 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Terraform Init
-        run: terraform init -reconfigure -input=false \
-          -backend-config="../environments/democompany/us-east-1/${{ needs.setup.outputs.environment }}/backend.tfvars"
+        run: terraform init -reconfigure -input=false -backend-config="../environments/democompany/us-east-1/${{ needs.setup.outputs.environment }}/backend.tfvars"
         working-directory: ${{ env.WORKING_DIRECTORY }}
 
       - name: Terraform Validate
@@ -91,13 +90,9 @@ jobs:
         id: plan
         run: |
           if [ "${{ needs.setup.outputs.action }}" == "deploy" ]; then
-            terraform plan \
-              -var-file="../environments/democompany/us-east-1/${{ needs.setup.outputs.environment }}/inputs.tfvars" \
-              -out=tfplan
+            terraform plan -var-file="../environments/democompany/us-east-1/${{ needs.setup.outputs.environment }}/inputs.tfvars" -out=tfplan
           else
-            terraform plan -destroy \
-              -var-file="../environments/democompany/us-east-1/${{ needs.setup.outputs.environment }}/inputs.tfvars" \
-              -out=tfplan
+            terraform plan -destroy -var-file="../environments/democompany/us-east-1/${{ needs.setup.outputs.environment }}/inputs.tfvars" -out=tfplan
           fi
         working-directory: ${{ env.WORKING_DIRECTORY }}
 
@@ -163,8 +158,7 @@ jobs:
           path: ${{ env.WORKING_DIRECTORY }}
 
       - name: Terraform Init
-        run: terraform init -reconfigure -input=false \
-          -backend-config="../environments/democompany/us-east-1/${{ needs.setup.outputs.environment }}/backend.tfvars"
+        run: terraform init -reconfigure -input=false -backend-config="../environments/democompany/us-east-1/${{ needs.setup.outputs.environment }}/backend.tfvars"
         working-directory: ${{ env.WORKING_DIRECTORY }}
 
       - name: Terraform Apply (Approved)
@@ -201,8 +195,7 @@ jobs:
           path: ${{ env.WORKING_DIRECTORY }}
 
       - name: Terraform Init
-        run: terraform init -reconfigure -input=false \
-          -backend-config="../environments/democompany/us-east-1/${{ needs.setup.outputs.environment }}/backend.tfvars"
+        run: terraform init -reconfigure -input=false -backend-config="../environments/democompany/us-east-1/${{ needs.setup.outputs.environment }}/backend.tfvars"
         working-directory: ${{ env.WORKING_DIRECTORY }}
 
       - name: Terraform Destroy (Approved)
