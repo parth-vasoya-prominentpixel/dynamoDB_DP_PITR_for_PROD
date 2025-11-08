@@ -1,10 +1,10 @@
-name: DynamoDB PITR Demo Pipeline
+name: DynamoDB PITR POC
 
 on:
   workflow_dispatch:
     inputs:
       environment:
-        description: "Choose environment: dev, uat, prod"
+        description: "Environment (dev, uat, prod)"
         required: true
         default: "dev"
         type: choice
@@ -16,42 +16,16 @@ permissions:
 
 env:
   AWS_REGION: us-east-1
-  REGION_PREFIX: use1
-  RESOURCE_PREFIX: d1g0
-  TENANT_NAME: demo
-  TABLE_NAME: demo-pitr-table
-  PITR_RETENTION_DAYS: 7
+  TABLE_NAME: poc-dynamodb-pitr-demo
 
 jobs:
-  setup:
-    name: Setup & AWS Authentication
-    runs-on: ubuntu-22.04
-    outputs:
-      environment: ${{ github.event.inputs.environment }}
-    steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-
-      - name: Configure AWS Credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ secrets.OIDC_ROLE }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Verify AWS Access
-        run: aws sts get-caller-identity
-
-  demo:
-    name: DynamoDB PITR Demo (${{ needs.setup.outputs.environment }})
-    needs: setup
+  dynamodb-poc:
     runs-on: ubuntu-22.04
     environment:
-      name: ${{ needs.setup.outputs.environment }}
+      name: ${{ github.event.inputs.environment }}
 
     steps:
-      - name: Checkout Repository
+      - name: Checkout Repo
         uses: actions/checkout@v4
 
       - name: Configure AWS Credentials
@@ -68,23 +42,18 @@ jobs:
       - name: Install boto3
         run: pip install boto3
 
-      - name: Run Inline Python DynamoDB Creation Demo (No KMS)
+      - name: Run DynamoDB Create/Update POC
         env:
           ENVIRONMENT: ${{ github.event.inputs.environment }}
-          REGION_PREFIX: ${{ env.REGION_PREFIX }}
-          TENANT_NAME: ${{ env.TENANT_NAME }}
-          RESOURCE_PREFIX: ${{ env.RESOURCE_PREFIX }}
           TABLE_NAME: ${{ env.TABLE_NAME }}
-          PITR_RETENTION_DAYS: ${{ env.PITR_RETENTION_DAYS }}
           AWS_REGION: ${{ env.AWS_REGION }}
         run: |
           python3 - <<'EOF'
-          import boto3, os, time, copy, json
+          import boto3, os, time, json
 
-          ENVIRONMENT = os.getenv("ENVIRONMENT")
+          ENV = os.getenv("ENVIRONMENT")
           REGION = os.getenv("AWS_REGION")
           TABLE_NAME = os.getenv("TABLE_NAME")
-          PITR_DAYS = int(os.getenv("PITR_RETENTION_DAYS", "7"))
 
           dynamodb = boto3.client("dynamodb", region_name=REGION)
 
@@ -95,66 +64,102 @@ jobs:
               except dynamodb.exceptions.ResourceNotFoundException:
                   return False
 
-          def wait_for_table(name, status):
+          def wait_for_status(name, desired):
               for _ in range(60):
                   desc = dynamodb.describe_table(TableName=name)
-                  s = desc["Table"]["TableStatus"]
-                  if s == status:
-                      print(f"✅ Table {name} is now {status}.")
+                  if desc["Table"]["TableStatus"] == desired:
+                      print(f"✅ Table {name} reached {desired}")
                       return
-                  print(f"Waiting for {name} to reach {status}...")
+                  print(f"⏳ Waiting for {desired}...")
                   time.sleep(5)
-              raise TimeoutError(f"Table {name} did not reach {status}")
 
-          def create_table_with_pitr():
+          def create_or_update_table():
               table_def = {
                   "TableName": TABLE_NAME,
                   "BillingMode": "PAY_PER_REQUEST",
-                  "AttributeDefinitions": [{"AttributeName": "id", "AttributeType": "S"}],
-                  "KeySchema": [{"AttributeName": "id", "KeyType": "HASH"}],
-                  "TimeToLiveSpecification": {"Enabled": True, "AttributeName": "ttl_expire_at"}
+                  "AttributeDefinitions": [
+                      {"AttributeName": "id", "AttributeType": "S"}
+                  ],
+                  "KeySchema": [
+                      {"AttributeName": "id", "KeyType": "HASH"}
+                  ]
               }
 
               if not table_exists(TABLE_NAME):
-                  print(f"🚀 Creating new table {TABLE_NAME}...")
-                  modified = copy.deepcopy(table_def)
-                  ttl_spec = modified.pop("TimeToLiveSpecification", None)
+                  print(f"🚀 Creating table: {TABLE_NAME}")
+                  if ENV == "prod":
+                      table_def["DeletionProtectionEnabled"] = True
+                      print("🔒 Deletion protection enabled for prod")
 
-                  if ENVIRONMENT == "prod":
-                      modified["DeletionProtectionEnabled"] = True
-                      print(f"Deletion Protection enabled (prod)")
+                  dynamodb.create_table(**table_def)
+                  wait_for_status(TABLE_NAME, "ACTIVE")
 
-                  dynamodb.create_table(**modified)
-                  wait_for_table(TABLE_NAME, "ACTIVE")
-
-                  if ENVIRONMENT == "prod":
+                  if ENV == "prod":
                       try:
-                          print(f"Enabling PITR ({PITR_DAYS} days retention)...")
+                          print("📦 Enabling PITR (Point-in-Time Recovery, 7 days)...")
                           dynamodb.update_continuous_backups(
                               TableName=TABLE_NAME,
                               PointInTimeRecoverySpecification={
                                   "PointInTimeRecoveryEnabled": True,
-                                  "RecoveryWindowInDays": PITR_DAYS,
-                              },
+                                  "RecoveryPeriodInDays": 7  # ✅ Correct boto3 param
+                              }
                           )
-                          print(f"✅ PITR Enabled on {TABLE_NAME} ({PITR_DAYS} days)")
+                          print("✅ PITR enabled with 7-day retention.")
                       except Exception as e:
-                          print(f"❌ PITR Error: {e}")
+                          print(f"⚠️ PITR error: {e}")
+                  else:
+                      print("Skipping PITR (non-prod).")
 
-                  if ttl_spec:
-                      print(f"Enabling TTL attribute: {ttl_spec['AttributeName']}")
-                      dynamodb.update_time_to_live(
-                          TableName=TABLE_NAME, TimeToLiveSpecification=ttl_spec
-                      )
-                      print("✅ TTL Enabled")
-
+                  print("⏰ Enabling TTL...")
+                  dynamodb.update_time_to_live(
+                      TableName=TABLE_NAME,
+                      TimeToLiveSpecification={
+                          "Enabled": True,
+                          "AttributeName": "ttl_expire_at"
+                      }
+                  )
+                  print("✅ TTL enabled.")
               else:
-                  print(f"ℹ️ Table {TABLE_NAME} already exists.")
-                  if ENVIRONMENT == "prod":
-                      desc = dynamodb.describe_continuous_backups(TableName=TABLE_NAME)
-                      pitr = desc["ContinuousBackupsDescription"]["PointInTimeRecoveryDescription"]
-                      print(f"PITR: {json.dumps(pitr, indent=2)}")
+                  print(f"ℹ️ Table {TABLE_NAME} exists. Checking PITR and TTL...")
 
-          create_table_with_pitr()
-          print("🎉 Demo complete — check DynamoDB console to verify settings!")
+                  if ENV == "prod":
+                      try:
+                          desc = dynamodb.describe_continuous_backups(TableName=TABLE_NAME)
+                          pitr_desc = desc["ContinuousBackupsDescription"]["PointInTimeRecoveryDescription"]
+                          if (pitr_desc.get("PointInTimeRecoveryStatus") != "ENABLED" or
+                              pitr_desc.get("RecoveryPeriodInDays") != 7):
+                              print("Updating PITR retention to 7 days...")
+                              dynamodb.update_continuous_backups(
+                                  TableName=TABLE_NAME,
+                                  PointInTimeRecoverySpecification={
+                                      "PointInTimeRecoveryEnabled": True,
+                                      "RecoveryPeriodInDays": 7
+                                  }
+                              )
+                              print("✅ PITR updated to 7 days.")
+                          else:
+                              print("✅ PITR already correctly configured.")
+                      except Exception as e:
+                          print(f"⚠️ PITR check error: {e}")
+
+                  try:
+                      ttl = dynamodb.describe_time_to_live(TableName=TABLE_NAME)
+                      ttl_status = ttl.get("TimeToLiveDescription", {}).get("TimeToLiveStatus")
+                      if ttl_status != "ENABLED":
+                          print("Enabling TTL again...")
+                          dynamodb.update_time_to_live(
+                              TableName=TABLE_NAME,
+                              TimeToLiveSpecification={
+                                  "Enabled": True,
+                                  "AttributeName": "ttl_expire_at"
+                              }
+                          )
+                      else:
+                          print("✅ TTL already enabled.")
+                  except Exception as e:
+                      print(f"⚠️ TTL check error: {e}")
+
+          # === EXECUTE ===
+          create_or_update_table()
+          print("🎉 POC complete — check DynamoDB console.")
           EOF
