@@ -38,7 +38,7 @@ variable "hash_key" {
 }
 
 variable "dyndb_name" {
-  default     = "pitr-deletion-protection-v2"
+  default     = "pitr-test-deletion-protection-v2"
   description = "This is the name we use in dynamo db table"
 }
 
