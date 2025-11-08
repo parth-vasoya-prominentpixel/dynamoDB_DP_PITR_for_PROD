@@ -43,7 +43,6 @@ jobs:
       - name: Verify AWS Access
         run: aws sts get-caller-identity
 
-
   demo:
     name: DynamoDB PITR Demo (${{ needs.setup.outputs.environment }})
     needs: setup
@@ -79,6 +78,7 @@ jobs:
           PITR_RETENTION_DAYS: ${{ env.PITR_RETENTION_DAYS }}
           AWS_REGION: ${{ env.AWS_REGION }}
         run: |
+          python3 - <<'EOF'
           import boto3, os, time, copy, json
 
           ENVIRONMENT = os.getenv("ENVIRONMENT")
@@ -102,6 +102,7 @@ jobs:
                   if s == status:
                       print(f"✅ Table {name} is now {status}.")
                       return
+                  print(f"Waiting for {name} to reach {status}...")
                   time.sleep(5)
               raise TimeoutError(f"Table {name} did not reach {status}")
 
@@ -156,3 +157,4 @@ jobs:
 
           create_table_with_pitr()
           print("🎉 Demo complete — check DynamoDB console to verify settings!")
+          EOF
