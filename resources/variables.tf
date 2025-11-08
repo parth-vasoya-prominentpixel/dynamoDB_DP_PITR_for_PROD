@@ -33,7 +33,7 @@ variable "company" {
 ##################################
 
 variable "hash_key" {
-  default     = "LockID"
+  default     = "ID"
   description = "This is the name for the primary key"
 }
 
