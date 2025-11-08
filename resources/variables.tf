@@ -52,11 +52,6 @@ variable "enable_deletion_protection" {
   description = "Enable dynamodb deletion protection"
 }
  
-variable "enable_deletion_protection" {
-  type        = bool
-  description = "Enable DynamoDB deletion protection"
-}
-
 variable "point_in_time_recovery_enabled" {
   type        = bool
   description = "Enable PITR in DynamoDB"
