@@ -42,7 +42,7 @@ resource_arn = []
   })
 
   providers = {
-    aws = aws.primary_region
+    aws = aws.region
   }
 
 }
