@@ -82,3 +82,9 @@ variable "point_in_time_recovery_period_in_days" {
     error_message = "You must provide a valid point_in_time_recovery_period_in_days (1–35) when point_in_time_recovery_enabled = true."
   }
 }
+
+
+variable "waf_name" {
+  description = "Name that used in waf"
+  default = "Only_US_IN_Accept"
+}

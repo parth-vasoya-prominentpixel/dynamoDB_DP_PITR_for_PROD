@@ -2,7 +2,9 @@ module "console_portal_waf" {
   source  = "aws-ss/wafv2/aws"
   version = "3.13.0"
 
-  name        = format("%s-waf-%s-cfnt-waf-%s-%s-%s", var.prefix_company, var.application, local.region_prefixes, var.env, var.random_suffix)
+  name        =   "${var.prefix_company}-waf-${var.waf_name}-${local.region_prefixes[var.region]}-${var.env}"
+
+
   description = "WAFv2 to allow only US and India traffic for Console Portal"
 
   scope          = "CLOUDFRONT"
@@ -36,7 +38,7 @@ module "console_portal_waf" {
   ]
 
   tags = merge(local.tags, {
-    "Name" = format("%s-waf-%s-cfnt-waf-%s-%s-%s", var.prefix_company, var.application, local.region_prefixes, var.env, var.random_suffix)
+    "Name" = "${var.prefix_company}-waf-${var.waf_name}-${local.region_prefixes[var.region]}-${var.env}"
   })
 
 }
