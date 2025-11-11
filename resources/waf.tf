@@ -41,9 +41,5 @@ resource_arn = []
     "Name" = format("%s-waf-%s-cfnt-waf-%s-%s-%s", var.prefix_company, var.application, local.region_prefixes, var.env, var.random_suffix)
   })
 
-  providers = {
-    aws = aws.region
-  }
-
 }
  
