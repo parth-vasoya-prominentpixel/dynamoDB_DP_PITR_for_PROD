@@ -26,6 +26,12 @@ variable "prefix_company" {
 variable "company" {
   description = "This is used as a company name"
 }
+variable "application" {
+  description = "This is used as a application name"
+}
+variable "random_suffix" {
+  description = "random-suffix"
+}
 
 
 ##################################
@@ -48,10 +54,10 @@ variable "billing_mode" {
 }
 
 variable "enable_deletion_protection" {
-  type = bool
+  type        = bool
   description = "Enable dynamodb deletion protection"
 }
- 
+
 variable "point_in_time_recovery_enabled" {
   type        = bool
   description = "Enable PITR in DynamoDB"

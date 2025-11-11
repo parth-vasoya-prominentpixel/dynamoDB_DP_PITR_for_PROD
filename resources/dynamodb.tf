@@ -16,9 +16,9 @@ module "dynamodb_table" {
   stream_enabled   = true
   stream_view_type = "NEW_IMAGE"
 
-  deletion_protection_enabled             = var.enable_deletion_protection
-  point_in_time_recovery_enabled          = var.point_in_time_recovery_enabled
-  point_in_time_recovery_period_in_days   = var.point_in_time_recovery_enabled ? var.point_in_time_recovery_period_in_days : null
- 
+  deletion_protection_enabled           = var.enable_deletion_protection
+  point_in_time_recovery_enabled        = var.point_in_time_recovery_enabled
+  point_in_time_recovery_period_in_days = var.point_in_time_recovery_enabled ? var.point_in_time_recovery_period_in_days : null
+
   tags = local.tags
 }

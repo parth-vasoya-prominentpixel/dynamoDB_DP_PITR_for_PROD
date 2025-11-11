@@ -46,5 +46,5 @@ locals {
     region     = var.region
   }
 
-  
+
 }
